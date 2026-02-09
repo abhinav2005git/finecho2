@@ -5,17 +5,19 @@ import { fileURLToPath } from "url";
 import { mkdir } from "fs/promises";
 import "dotenv/config";
 import supabase, { supabaseAdmin } from "./supabase.js";
-import { verifyAuth, requireAdvisor } from "./middleware/auth.js";
 import callsRouter from "./routes/calls.js";
 import clientsRouter from "./routes/clients.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-mkdir(UPLOAD_DIR, { recursive: true }).catch(() => {});
+mkdir(UPLOAD_DIR, { recursive: true }).catch(() => { });
 
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:8080', 'http://localhost:8081', 'http://localhost:8082', 'http://localhost:8083', 'http://localhost:8084', 'http://localhost:8085', 'http://localhost:8086', 'http://172.18.232.191:8080', 'http://172.18.232.191:8081', 'http://172.18.232.191:8082', 'http://172.18.232.191:8083', 'http://172.18.232.191:8084', 'http://172.18.232.191:8085', 'http://172.18.232.191:8086'],
+  credentials: true
+}));
 app.use(express.json());
 
 // Public routes (no auth required)
@@ -23,14 +25,13 @@ app.get("/", (req, res) => {
   res.send("FinEcho backend running");
 });
 
-// Protected routes (require authentication)
-app.use("/api/calls", verifyAuth, requireAdvisor, callsRouter);
-app.use("/api/clients", verifyAuth, requireAdvisor, clientsRouter);
-app.use("/api/advisor", verifyAuth, requireAdvisor);
-app.use("/api/dashboard", verifyAuth, requireAdvisor);
+// Public API routes (no auth required)
+app.use("/api/calls", callsRouter);
+app.use("/api/clients", clientsRouter);
+// Note: /api/advisor and /api/dashboard routes are defined inline below
 
-// Legacy summary endpoint (protected)
-app.post("/api/summary", verifyAuth, requireAdvisor, async (req, res) => {
+// Summary endpoint (public)
+app.post("/api/summary", async (req, res) => {
   const d = req.body;
 
   console.log("Received summary:", d);
@@ -66,7 +67,7 @@ app.post("/api/summary", verifyAuth, requireAdvisor, async (req, res) => {
   });
 });
 
-app.get("/api/summaries", verifyAuth, requireAdvisor, async (req, res) => {
+app.get("/api/summaries", async (req, res) => {
   const { data, error } = await supabase
     .from("summaries")
     .select("*")
@@ -79,15 +80,13 @@ app.get("/api/summaries", verifyAuth, requireAdvisor, async (req, res) => {
   res.json(data);
 });
 /** Advisor dashboard stats: prefer calls table, fallback to summaries. */
-app.get("/api/advisor/dashboard", verifyAuth, requireAdvisor, async (req, res) => {
+app.get("/api/advisor/dashboard", async (req, res) => {
   try {
     const from = req.query.from;
     const to = req.query.to;
-    // Use authenticated user's ID instead of query param
-    const advisor_id = req.user.id;
+    // Remove user filtering - get all data
 
     let q = supabaseAdmin.from("calls").select("id, status, compliance_status, created_at");
-    if (advisor_id) q = q.eq("advisor_id", advisor_id);
     if (from) q = q.gte("created_at", from + "T00:00:00.000Z");
     if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
     const { data: callRows, error: callErr } = await q;
@@ -129,13 +128,13 @@ app.get("/api/advisor/dashboard", verifyAuth, requireAdvisor, async (req, res) =
 });
 
 /** Legacy dashboard summary (same shape as before for any existing callers). */
-app.get("/api/dashboard/summary", verifyAuth, requireAdvisor, async (req, res) => {
+app.get("/api/dashboard/summary", async (req, res) => {
   try {
     const from = req.query.from;
     const to = req.query.to;
     let q = supabaseAdmin.from("summaries").select("id,call_id,compliance,client_response,created_at");
     if (from) q = q.gte("created_at", from + "T00:00:00.000Z");
-    if (to)   q = q.lte("created_at", to + "T23:59:59.999Z");
+    if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
     const { data: rows, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
     const list = rows || [];
@@ -152,13 +151,13 @@ app.get("/api/dashboard/summary", verifyAuth, requireAdvisor, async (req, res) =
 });
 
 /** List calls (from summaries) for advisor dashboard. */
-app.get("/api/advisor/calls", verifyAuth, requireAdvisor, async (req, res) => {
+app.get("/api/advisor/calls", async (req, res) => {
   try {
     const from = req.query.from;
     const to = req.query.to;
     let q = supabaseAdmin.from("summaries").select("*").order("created_at", { ascending: false });
     if (from) q = q.gte("created_at", from + "T00:00:00.000Z");
-    if (to)   q = q.lte("created_at", to + "T23:59:59.999Z");
+    if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
     const { data: rows, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
     const list = rows || [];
@@ -183,7 +182,7 @@ app.get("/api/advisor/calls", verifyAuth, requireAdvisor, async (req, res) => {
 });
 
 /** Single summary by call_id for CallSummary page. */
-app.get("/api/advisor/calls/:callId/summary", verifyAuth, requireAdvisor, async (req, res) => {
+app.get("/api/advisor/calls/:callId/summary", async (req, res) => {
   try {
     const { callId } = req.params;
     const { data: row, error } = await supabaseAdmin

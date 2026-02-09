@@ -3,17 +3,16 @@ import { supabaseAdmin } from "../supabase.js";
 
 const router = Router();
 
-/** GET /api/clients - (advisor_id from auth) */
+/** GET /api/clients - (no auth required) */
 router.get("/", async (req, res) => {
   try {
-    // Use authenticated user's ID
-    const advisor_id = req.user.id;
+    // No user filtering since auth is removed
 
     const { data, error } = await supabaseAdmin
-      .from("clients")
-      .select("id, name, email, phone")
-      .eq("advisor_id", advisor_id)
-      .order("name");
+  .from("clients")
+  .select("id, name, email")
+  .order("name");
+  console.log("Fetched clients:", data);
 
     if (error) {
       // If table doesn't exist, return empty array

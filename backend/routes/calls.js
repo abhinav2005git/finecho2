@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
 import { supabaseAdmin } from "../supabase.js";
 import { runCallPipeline } from "../services/callPipeline.js";
+import { getAudioDurationSeconds } from "../services/duration.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, "../uploads");
@@ -20,8 +21,6 @@ const router = Router();
 /** POST /api/calls/upload - multipart: audio, client_id, notes? (advisor_id from auth) */
 router.post("/upload", upload.single("audio"), async (req, res) => {
   try {
-    // Use authenticated user's ID
-    const advisor_id = req.user.id;
     const client_id = req.body.client_id || req.body.clientId;
     const notes = req.body.notes || null;
     if (!client_id) {
@@ -31,6 +30,32 @@ router.post("/upload", upload.single("audio"), async (req, res) => {
       return res.status(400).json({ error: "audio file required" });
     }
 
+    // Look up advisor_id from the client record since this route is public
+    const { data: clientRow, error: clientError } = await supabaseAdmin
+      .from("clients")
+      .select("advisor_id")
+      .eq("id", client_id)
+      .maybeSingle();
+
+    if (clientError) {
+      console.error("Upload error: failed to lookup client", clientError);
+      return res.status(500).json({ error: "Failed to look up client" });
+    }
+    if (!clientRow?.advisor_id) {
+      return res.status(400).json({ error: "Client not found" });
+    }
+
+    const advisor_id = clientRow.advisor_id;
+
+    // Compute duration using ffprobe; if it fails, log and continue with 0
+    let duration_seconds = 0;
+    try {
+      duration_seconds = await getAudioDurationSeconds(req.file.path);
+    } catch (err) {
+      console.error("Upload warning: failed to compute duration via ffprobe:", err);
+      duration_seconds = 0;
+    }
+
     const { data: row, error } = await supabaseAdmin
       .from("calls")
       .insert([
@@ -38,6 +63,7 @@ router.post("/upload", upload.single("audio"), async (req, res) => {
           advisor_id,
           client_id,
           audio_path: req.file.path,
+          duration_seconds,
           notes,
           status: "uploaded",
         },
@@ -46,6 +72,14 @@ router.post("/upload", upload.single("audio"), async (req, res) => {
       .single();
 
     if (error) {
+      // Helpful hint if the calls table has not been created yet
+      if (error.message?.includes("Could not find the table 'public.calls'")) {
+        console.error("Upload error: calls table missing. Run migration backend/migrations/001_calls_clients.sql in Supabase.");
+        return res.status(500).json({
+          error:
+            "Calls table is missing in Supabase. Please run backend/migrations/001_calls_clients.sql in the Supabase SQL editor, then retry.",
+        });
+      }
       return res.status(500).json({ error: error.message });
     }
 
@@ -60,22 +94,20 @@ router.post("/upload", upload.single("audio"), async (req, res) => {
   }
 });
 
-/** GET /api/calls - list calls; query: from, to (advisor_id from auth) */
+/** GET /api/calls - list calls; query: from, to (no auth required) */
 router.get("/", async (req, res) => {
   try {
-    // Use authenticated user's ID
-    const advisor_id = req.user.id;
+    // No user filtering since auth is removed
     const from = req.query.from;
     const to = req.query.to;
 
     // Try calls table first
     let q = supabaseAdmin.from("calls").select("*, clients(id, name)").order("created_at", { ascending: false });
-    if (advisor_id) q = q.eq("advisor_id", advisor_id);
     if (from) q = q.gte("created_at", from + "T00:00:00.000Z");
     if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
 
     const { data: rows, error } = await q;
-    
+
     // If calls table has data, return it
     if (!error && rows && rows.length > 0) {
       const list = rows.map((r) => ({
@@ -106,9 +138,9 @@ router.get("/", async (req, res) => {
     let fallback = supabaseAdmin.from("summaries").select("*").order("created_at", { ascending: false });
     if (from) fallback = fallback.gte("created_at", from + "T00:00:00.000Z");
     if (to) fallback = fallback.lte("created_at", to + "T23:59:59.999Z");
-    
+
     const { data: summaryRows, error: summaryError } = await fallback;
-    
+
     if (summaryError) {
       return res.status(500).json({ error: summaryError.message });
     }
@@ -129,7 +161,7 @@ router.get("/", async (req, res) => {
       compliance_flags: [],
       status: "completed",
     }));
-    
+
     res.json(list);
   } catch (err) {
     console.error("Calls list error:", err);
@@ -143,7 +175,9 @@ router.get("/:id", async (req, res) => {
     const { id } = req.params;
     const { data: row, error } = await supabaseAdmin
       .from("calls")
-      .select("*, clients(id, name, email, phone)")
+      // Some deployments of the clients table do not have a phone column,
+      // so we only select id + name + email here to avoid schema errors.
+      .select("*, clients(id, name, email)")
       .eq("id", id)
       .maybeSingle();
 
@@ -156,7 +190,7 @@ router.get("/:id", async (req, res) => {
       client_id: row.client_id,
       clientName: row.clients?.name ?? "Client",
       clientEmail: row.clients?.email,
-      clientPhone: row.clients?.phone,
+      clientPhone: row.clients?.phone ?? null,
       transcript: row.transcript,
       summary: row.summary,
       goals: row.goals ?? [],
@@ -171,6 +205,24 @@ router.get("/:id", async (req, res) => {
   } catch (err) {
     console.error("Call get error:", err);
     res.status(500).json({ error: "Call fetch failed" });
+  }
+});
+
+/** DELETE /api/calls/:id - delete a call (no audio cleanup needed; already removed) */
+router.delete("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabaseAdmin.from("calls").delete().eq("id", id);
+
+    if (error) {
+      console.error("Call delete error:", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Call delete unexpected error:", err);
+    res.status(500).json({ error: "Call delete failed" });
   }
 });
 

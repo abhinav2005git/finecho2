@@ -20,7 +20,19 @@ CREATE TABLE IF NOT EXISTS calls (
   goals JSONB DEFAULT '[]',
   language TEXT,
   duration_seconds INTEGER DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'uploaded' CHECK (status IN ('uploaded', 'transcribing', 'transcribed', 'summarized', 'completed')),
+  -- We support additional failure states used by the pipeline:
+  -- 'failed_transcription' and 'failed_summary'
+  status TEXT NOT NULL DEFAULT 'uploaded' CHECK (
+    status IN (
+      'uploaded',
+      'transcribing',
+      'transcribed',
+      'summarized',
+      'completed',
+      'failed_transcription',
+      'failed_summary'
+    )
+  ),
   compliance_status TEXT DEFAULT 'clear' CHECK (compliance_status IN ('clear', 'warning', 'risk')),
   compliance_flags JSONB DEFAULT '[]',
   notes TEXT,
