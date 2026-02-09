@@ -1,0 +1,14 @@
+{
+  "callId": "CALL_001",
+  "summary": "The advisory call focused on retirement planning...",
+  "goals": ["Retirement"],
+  "riskLevel": "Moderate",
+  "sip": {
+    "type": "Monthly",
+    "amount": 10000,
+    "category": "Equity",
+    "riskExplained": true
+  },
+  "clientResponse": "Considering",
+  "compliance": "No compliance risks detected based on the recorded conversation"
+}

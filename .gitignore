@@ -1,0 +1,17 @@
+# Node
+node_modules
+.env
+
+# Backend uploads
+backend/uploads
+
+# Python
+whisper-env
+__pycache__
+*.mp3
+*.mp4
+
+# OS
+.DS_Store
+
+
